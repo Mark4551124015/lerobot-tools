@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-lmdb"
+version = "0.1.0"
+description = "Fast JPEG-in-LMDB caches and v3-to-v2.1 conversion utilities for LeRobot datasets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "LeRobot LMDB contributors"}]
+keywords = ["lerobot", "lmdb", "robot-learning", "dataloader"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "lmdb>=1.4",
+  "numpy>=1.24",
+  "Pillow>=10.0",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+cv2 = ["opencv-python>=4.8"]
+convert = ["pandas>=2.0", "pyarrow>=14.0"]
+examples = ["torch>=2.1"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+lerobot-lmdb-build = "lerobot_lmdb.build:main"
+lerobot-v3-to-v21 = "lerobot_lmdb.convert:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
