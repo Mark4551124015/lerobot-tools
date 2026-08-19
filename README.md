@@ -1,4 +1,4 @@
-# lerobot-lmdb
+# mtl_tool
 
 为 [LeRobot](https://github.com/huggingface/lerobot) episode 数据集提供快速、可随机读取的 JPEG-in-LMDB 帧缓存，以及 RobotWin 风格 LeRobot v3 到 v2.1 的转换工具。
 
@@ -18,8 +18,8 @@
 Python 3.10+：
 
 ```bash
-git clone https://github.com/<your-org>/lerobot-lmdb.git
-cd lerobot-lmdb
+git clone https://github.com/<your-org>/mtl_tool.git
+cd mtl_tool
 pip install -e '.[cv2,convert,examples]'
 ```
 
@@ -30,7 +30,7 @@ pip install -e '.[cv2,convert,examples]'
 最常用的命令：
 
 ```bash
-lerobot-lmdb-build /data/lerobot/my_dataset \
+mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset \
   --decoder auto \
   --jpeg-quality 95 \
   --jobs 8
@@ -51,23 +51,23 @@ lmdb/
 
 ```bash
 # 先确认会处理哪些视频，不写任何数据
-lerobot-lmdb-build /data/lerobot --dry-run
+mtl_tool.lerobot_lmdb_build /data/lerobot --dry-run
 
 # 把多数据集根目录的缓存统一写到高速本地盘；保留原有子目录结构
-lerobot-lmdb-build /data/lerobot --output-root /scratch/lerobot-lmdb --jobs 16
+mtl_tool.lerobot_lmdb_build /data/lerobot --output-root /scratch/lerobot-lmdb --jobs 16
 
 # 明确用 OpenCV（若不存在或损坏的视频应立即失败）
-lerobot-lmdb-build /data/lerobot/my_dataset --decoder cv2
+mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset --decoder cv2
 
 # 更小的缓存；quality=90, 4:2:0。视觉训练通常建议先比较指标再降质量。
-lerobot-lmdb-build /data/lerobot/my_dataset --jpeg-quality 90 --jpeg-subsampling 2
+mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset --jpeg-quality 90 --jpeg-subsampling 2
 
 # 只构建一个视角 / 试跑少量 episode
-lerobot-lmdb-build /data/lerobot/my_dataset \
+mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset \
   --video-key observation.images.top --max-episodes 10
 
 # 重建已有缓存；坏视频记录后继续
-lerobot-lmdb-build /data/lerobot/my_dataset --overwrite --skip-bad-videos
+mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset --overwrite --skip-bad-videos
 ```
 
 默认不使用 `--target-fps`，因此 cache key 与 episode 的原始 frame index 一一对应，最适合现有 LeRobot 训练代码。使用 `--target-fps` 时，缓存中的 key 变为连续的采样序号；原始 frame id 在 `__meta__.source_frame_indices` 中保存，训练代码需要据此映射，不能直接把原始 frame index 当作 LMDB key。
@@ -85,7 +85,7 @@ batch 的 `image` 是 `uint8` 的 `NCHW RGB` Tensor，另有 `episode_index`、`
 
 ```python
 from torch.utils.data import DataLoader
-from lerobot_lmdb import LmdbFrameDataset
+from mtl_tool import LmdbFrameDataset, lerobot_lmdb_build
 
 dataset = LmdbFrameDataset("/data/lerobot/my_dataset")
 loader = DataLoader(dataset, batch_size=32, num_workers=4, shuffle=True, persistent_workers=True)
@@ -94,16 +94,25 @@ for batch in loader:
     # train(images)
 ```
 
+同一能力也可直接作为 Python API 调用：
+
+```python
+from mtl_tool import convert, lerobot_lmdb_build
+
+convert("/data/robotwin_v3", "/data/robotwin_v21", jobs=8)
+lerobot_lmdb_build("/data/robotwin_v21", decoder="auto", jpeg_quality=95, jobs=8)
+```
+
 ## 3. LeRobot v3 → v2.1
 
 此转换器面向 task-sharded v3 数据：共享 parquet / MP4 文件加 `meta/episodes/*.parquet` 的时间范围。输出为 v2.1 的逐 episode parquet、逐 episode MP4 和 `meta/*.jsonl`：
 
 ```bash
-lerobot-v3-to-v21 /data/robotwin_v3 /data/robotwin_v21 \
+mtl_tool.convert /data/robotwin_v3 /data/robotwin_v21 \
   --jobs 8 --ffmpeg-threads 1
 
 # 验证完转换后，再构建 LMDB
-lerobot-lmdb-build /data/robotwin_v21 --decoder auto --jobs 8
+mtl_tool.lerobot_lmdb_build /data/robotwin_v21 --decoder auto --jobs 8
 ```
 
 转换器不会覆盖输出目录，除非显式传入 `--overwrite`。`--max-datasets` 和 `--max-episodes` 可用于先做小规模验证。视频裁剪会重编码（默认 `libx264`, CRF 18）；可用 `--video-codec`、`--video-crf` 和 `--video-preset` 控制。

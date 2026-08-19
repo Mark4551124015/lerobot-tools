@@ -81,7 +81,7 @@ def _decode_cv2(path: Path) -> tuple[np.ndarray, float]:
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("OpenCV is not installed; run `pip install lerobot-lmdb[cv2]`.") from exc
+        raise RuntimeError("OpenCV is not installed; run `pip install mtl-tool[cv2]`.") from exc
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
         raise RuntimeError(f"OpenCV cannot open {path}")
@@ -176,8 +176,45 @@ def _build_one(task: dict[str, Any]) -> dict[str, Any]:
     return {**task, "frames": len(selected), "decoder_used": used_decoder, "metadata": metadata}
 
 
-def main() -> None:
-    args = parse_args()
+def lerobot_lmdb_build(
+    dataset_root: str | Path,
+    *,
+    output_root: str | Path | None = None,
+    decoder: str = "auto",
+    jpeg_quality: int = 95,
+    jpeg_subsampling: int = 0,
+    target_fps: float | None = None,
+    jobs: int = 1,
+    video_key: str | list[str] | None = None,
+    max_episodes: int | None = None,
+    overwrite: bool = False,
+    skip_bad_videos: bool = False,
+    dry_run: bool = False,
+) -> None:
+    """Build compatible LeRobot JPEG-in-LMDB caches from Python.
+
+    This is the programmatic counterpart to the ``mtl_tool.lerobot_lmdb_build`` command.
+    ``video_key`` may be one video feature or a list of features.
+    """
+    keys = [video_key] if isinstance(video_key, str) else video_key
+    args = argparse.Namespace(
+        dataset_root=Path(dataset_root),
+        output_root=Path(output_root) if output_root is not None else None,
+        decoder=decoder,
+        jpeg_quality=jpeg_quality,
+        jpeg_subsampling=jpeg_subsampling,
+        target_fps=target_fps,
+        jobs=jobs,
+        video_key=keys,
+        max_episodes=max_episodes,
+        overwrite=overwrite,
+        skip_bad_videos=skip_bad_videos,
+        dry_run=dry_run,
+    )
+    _run_build(args)
+
+
+def _run_build(args: argparse.Namespace) -> None:
     if not 1 <= args.jpeg_quality <= 100:
         raise ValueError("--jpeg-quality must be between 1 and 100")
     if args.jobs < 1:
@@ -250,6 +287,10 @@ def main() -> None:
         print(f"Completed with {len(failures)} skipped videos:")
         for path, error in failures:
             print(f"  {path}: {error}")
+
+
+def main() -> None:
+    _run_build(parse_args())
 
 
 if __name__ == "__main__":

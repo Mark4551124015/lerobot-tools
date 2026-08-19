@@ -207,8 +207,38 @@ def _convert_dataset(source: Path, destination: Path, args: argparse.Namespace) 
     _write_json(destination / "meta" / "info.json", _output_info(info, len(output_episodes), total_frames, len(task_by_id), len(keys), chunk_size, args.video_codec))
 
 
-def main() -> None:
-    args = parse_args()
+def convert(
+    source_root: str | Path,
+    dest_root: str | Path,
+    *,
+    chunk_size: int | None = None,
+    video_codec: str = "libx264",
+    video_crf: int = 18,
+    video_preset: str = "veryfast",
+    jobs: int = 8,
+    ffmpeg_threads: int = 1,
+    max_datasets: int | None = None,
+    max_episodes: int | None = None,
+    overwrite: bool = False,
+) -> None:
+    """Convert task-sharded LeRobot v3 data into v2.1 episode files from Python."""
+    args = argparse.Namespace(
+        source_root=Path(source_root),
+        dest_root=Path(dest_root),
+        chunk_size=chunk_size,
+        video_codec=video_codec,
+        video_crf=video_crf,
+        video_preset=video_preset,
+        jobs=jobs,
+        ffmpeg_threads=ffmpeg_threads,
+        max_datasets=max_datasets,
+        max_episodes=max_episodes,
+        overwrite=overwrite,
+    )
+    _run_convert(args)
+
+
+def _run_convert(args: argparse.Namespace) -> None:
     if args.jobs < 1:
         raise ValueError("--jobs must be positive")
     source_root, dest_root = args.source_root.expanduser().resolve(), args.dest_root.expanduser().resolve()
@@ -222,6 +252,10 @@ def main() -> None:
         destination = dest_root / relative
         print(f"{source} -> {destination}")
         _convert_dataset(source, destination, args)
+
+
+def main() -> None:
+    _run_convert(parse_args())
 
 
 if __name__ == "__main__":

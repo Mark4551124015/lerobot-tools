@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lerobot-lmdb"
+name = "mtl-tool"
 version = "0.1.0"
-description = "Fast JPEG-in-LMDB caches and v3-to-v2.1 conversion utilities for LeRobot datasets"
+description = "LeRobot JPEG-in-LMDB caches and v3-to-v2.1 conversion utilities"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -31,8 +31,8 @@ examples = ["torch>=2.1"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]
-lerobot-lmdb-build = "lerobot_lmdb.build:main"
-lerobot-v3-to-v21 = "lerobot_lmdb.convert:main"
+"mtl_tool.lerobot_lmdb_build" = "mtl_tool.build:main"
+"mtl_tool.convert" = "mtl_tool.conversion:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
