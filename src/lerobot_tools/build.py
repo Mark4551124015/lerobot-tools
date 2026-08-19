@@ -10,11 +10,19 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+import lmdb
 import numpy as np
 from tqdm import tqdm
 
 from .cache import read_metadata, write_frames
-from .layout import cache_path, discover_v21_datasets, read_json, resolve_cache_root, video_keys, video_path
+from .layout import (
+    cache_path,
+    discover_v21_datasets,
+    read_json,
+    resolve_cache_root,
+    video_keys,
+    video_path,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,7 +114,7 @@ def _decode_ffmpeg(path: Path) -> tuple[np.ndarray, float]:
         "ffmpeg", "-v", "error", "-nostdin", "-threads", "1", "-i", str(path),
         "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
     ]
-    result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, check=True, capture_output=True)
     one_frame = width * height * 3
     usable = (len(result.stdout) // one_frame) * one_frame
     if usable == 0:
@@ -123,7 +131,7 @@ def decode_video(path: Path, decoder: str) -> tuple[np.ndarray, float, str]:
         try:
             frames, fps = _decode_cv2(path) if backend == "cv2" else _decode_ffmpeg(path)
             return frames, fps, backend
-        except Exception as exc:  # Preserve both failure causes for useful diagnostics.
+        except Exception as exc:  # noqa: BLE001 - auto mode must fall back from any backend failure.
             errors.append(f"{backend}: {exc}")
     raise RuntimeError(f"Unable to decode {path}. " + " | ".join(errors))
 
@@ -151,7 +159,16 @@ def _cache_is_compatible(path: Path) -> bool:
     try:
         metadata = read_metadata(path)
         return metadata.get("format") == "jpeg" and int(metadata["shape"][0]) > 0
-    except Exception:
+    except (
+        KeyError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+        lmdb.Error,
+    ):
         return False
 
 

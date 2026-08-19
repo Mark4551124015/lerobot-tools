@@ -6,9 +6,10 @@ import io
 import json
 import os
 import shutil
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import lmdb
 import numpy as np

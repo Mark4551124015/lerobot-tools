@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Minimal, runnable PyTorch DataLoader example for a built LMDB cache."""
 
 from __future__ import annotations

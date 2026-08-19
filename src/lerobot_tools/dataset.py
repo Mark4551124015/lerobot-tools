@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import io
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import lmdb
 import numpy as np
@@ -116,9 +117,3 @@ class LmdbFrameDataset:
         state = self.__dict__.copy()
         state["_envs"] = OrderedDict()
         return state
-
-    def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
