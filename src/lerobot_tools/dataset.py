@@ -36,7 +36,7 @@ class LmdbFrameDataset:
         try:
             import torch  # noqa: F401
         except ImportError as exc:
-            raise ImportError("LmdbFrameDataset requires PyTorch. Install `mtl-tool[examples]`.") from exc
+            raise ImportError("LmdbFrameDataset requires PyTorch. Install `lerobot-tools[examples]`.") from exc
         self.dataset_root = Path(dataset_root).expanduser().resolve()
         self.cache_root = Path(cache_root).expanduser().resolve() if cache_root else self.dataset_root / "lmdb"
         self.info = read_json(self.dataset_root / "meta" / "info.json")
@@ -60,7 +60,7 @@ class LmdbFrameDataset:
                 path = cache_path(self.cache_root, episode_index, self.chunk_size, key)
                 if not path.exists():
                     raise FileNotFoundError(
-                        f"Missing cache {path}. Build it with `mtl_tool.lerobot_lmdb_build {self.dataset_root}`."
+                        f"Missing cache {path}. Build it with `lerobot_tools lmdb-build {self.dataset_root}`."
                     )
                 frame_count = int(read_metadata(path)["shape"][0])
                 self.samples.extend((path, episode_index, frame_index, key) for frame_index in range(frame_count))

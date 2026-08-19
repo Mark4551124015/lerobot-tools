@@ -8,7 +8,7 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
-from mtl_tool import LmdbFrameDataset
+from lerobot_tools import LmdbFrameDataset
 
 
 def main() -> None:

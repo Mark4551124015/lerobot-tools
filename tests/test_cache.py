@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from mtl_tool.cache import frame_key, read_frame, read_metadata, write_frames
+from lerobot_tools.cache import frame_key, read_frame, read_metadata, write_frames
 
 
 def test_jpeg_lmdb_round_trip_and_compatible_keys(tmp_path):

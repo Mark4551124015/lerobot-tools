@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mtl-tool"
+name = "lerobot-tools"
 version = "0.1.0"
 description = "LeRobot JPEG-in-LMDB caches and v3-to-v2.1 conversion utilities"
 readme = "README.md"
@@ -31,8 +31,7 @@ examples = ["torch>=2.1"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]
-"mtl_tool.lerobot_lmdb_build" = "mtl_tool.build:main"
-"mtl_tool.convert" = "mtl_tool.conversion:main"
+lerobot_tools = "lerobot_tools.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

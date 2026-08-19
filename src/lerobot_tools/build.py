@@ -81,7 +81,7 @@ def _decode_cv2(path: Path) -> tuple[np.ndarray, float]:
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("OpenCV is not installed; run `pip install mtl-tool[cv2]`.") from exc
+        raise RuntimeError("OpenCV is not installed; run `pip install lerobot-tools[cv2]`.") from exc
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
         raise RuntimeError(f"OpenCV cannot open {path}")
@@ -193,7 +193,7 @@ def lerobot_lmdb_build(
 ) -> None:
     """Build compatible LeRobot JPEG-in-LMDB caches from Python.
 
-    This is the programmatic counterpart to the ``mtl_tool.lerobot_lmdb_build`` command.
+    This is the programmatic counterpart to the ``lerobot_tools lmdb-build`` command.
     ``video_key`` may be one video feature or a list of features.
     """
     keys = [video_key] if isinstance(video_key, str) else video_key

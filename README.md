@@ -1,42 +1,73 @@
-# mtl_tool
+# lerobot-tools
 
-为 [LeRobot](https://github.com/huggingface/lerobot) episode 数据集提供快速、可随机读取的 JPEG-in-LMDB 帧缓存，以及 RobotWin 风格 LeRobot v3 到 v2.1 的转换工具。
+LeRobot 数据集转换与 LMDB I/O 加速工具集。它包含两个可组合的能力：
 
-它来自本项目的训练数据路径，LMDB 格式与原有 loader 直接兼容：`__meta__` 保存元数据，帧以 `frame/00000000` 形式保存 RGB JPEG。缓存保留原始 RGB 尺寸；训练时再 resize/augment，避免把某个模型的图像几何固化进数据集。
+1. 将 RobotWin 风格、task-sharded 的 LeRobot v3 数据转换为 episode-oriented 的 v2.1 数据；
+2. 将 v2.1 视频预解码为 JPEG-in-LMDB 帧缓存，降低训练时的随机视频 I/O 开销。
 
-## 功能
+> Powered by MTL Lab — Zexin Feng
 
-- 自动扫描一个 v2.1 数据集，或其下的多个数据集。
-- 默认 `auto` decoder：优先使用更快的 OpenCV (`cv2`)，失败时自动退回到 `ffmpeg`。
-- 显式选择 `cv2` 或 `ffmpeg`，并记录实际 decoder、源 FPS 和采样 frame id 到 LMDB 元数据。
-- 可设置 JPEG 质量（默认 `95`）和 chroma subsampling；写入使用原子目录替换，半途失败不会留下可误读的缓存。
-- 示例 PyTorch `DataLoader`：每个 worker 都有自己的 LRU LMDB 句柄缓存。
-- 转换 v3 task-sharded 布局为 v2.1 episode parquet/video 布局，然后可直接构建 LMDB。
+## 为什么使用它
+
+- `auto` decoder 优先使用通常更快的 OpenCV/cv2，失败时自动回退 ffmpeg。
+- JPEG 质量、色度采样、并行度、视角和处理 episode 范围均可控制。
+- 写入使用临时目录和原子替换：中断不会留下半成品 cache。
+- LMDB 帧 key 与本项目现有训练 loader 兼容：`frame/00000000`，并以 `__meta__` 保存元数据。
+- 缓存保留原始 RGB 尺寸；resize、crop 与 augmentation 应在训练/推理阶段完成。
+- 自带可运行的 PyTorch DataLoader 示例，每个 worker 独立维护 LMDB 句柄缓存。
 
 ## 安装
 
-Python 3.10+：
+需要 Python 3.10+。从源码安装完整功能：
 
 ```bash
-git clone https://github.com/<your-org>/mtl_tool.git
-cd mtl_tool
+git clone https://github.com/<your-org>/lerobot-tools.git
+cd lerobot-tools
 pip install -e '.[cv2,convert,examples]'
 ```
 
-`ffmpeg`/`ffprobe` 仅在使用 `--decoder ffmpeg`、自动 decoder 回退，或执行 v3 转换时需要。例如 Ubuntu：`sudo apt install ffmpeg`。
+依赖分组：
 
-## 1. 从 LeRobot v2.1 视频构建 LMDB
+| Extra | 用途 |
+| --- | --- |
+| `cv2` | 默认优先的视频 decoder（OpenCV） |
+| `convert` | v3→v2.1 所需的 pandas、pyarrow |
+| `examples` | DataLoader 示例所需的 PyTorch |
+| `dev` | 测试与 lint 所需的 pytest、ruff |
 
-最常用的命令：
+`--decoder ffmpeg`、`auto` 回退以及 v3 转换都需要系统中的 `ffmpeg` 与 `ffprobe`。Ubuntu 示例：`sudo apt install ffmpeg`。
+
+安装完成后：
 
 ```bash
-mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset \
+lerobot_tools --help
+lerobot_tools lmdb-build --help
+lerobot_tools convert --help
+```
+
+## 命令行快速开始
+
+### 1. 从 LeRobot v2.1 构建 LMDB
+
+v2.1 数据集至少应包含 `meta/info.json` 和逐 episode 视频：
+
+```text
+my_dataset/
+├── meta/info.json
+├── data/chunk-000/episode_000000.parquet
+└── videos/chunk-000/<video_key>/episode_000000.mp4
+```
+
+最常用的构建命令：
+
+```bash
+lerobot_tools lmdb-build /data/my_dataset \
   --decoder auto \
   --jpeg-quality 95 \
   --jobs 8
 ```
 
-默认输出为 `/data/lerobot/my_dataset/lmdb`。目录结构如下，和本项目的训练 loader 兼容：
+默认输出是 `/data/my_dataset/lmdb`：
 
 ```text
 lmdb/
@@ -47,82 +78,129 @@ lmdb/
             └── lock.mdb
 ```
 
-常见用法：
+常见选项：
 
 ```bash
-# 先确认会处理哪些视频，不写任何数据
-mtl_tool.lerobot_lmdb_build /data/lerobot --dry-run
+# 只查看任务计划，不解码、不写数据
+lerobot_tools lmdb-build /data/lerobot --dry-run
 
-# 把多数据集根目录的缓存统一写到高速本地盘；保留原有子目录结构
-mtl_tool.lerobot_lmdb_build /data/lerobot --output-root /scratch/lerobot-lmdb --jobs 16
+# 多数据集根目录：缓存写入本地 SSD，并镜像数据集相对路径
+lerobot_tools lmdb-build /data/lerobot \
+  --output-root /scratch/lerobot-lmdb --jobs 16
 
-# 明确用 OpenCV（若不存在或损坏的视频应立即失败）
-mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset --decoder cv2
+# 强制 cv2；若打不开视频则直接报错
+lerobot_tools lmdb-build /data/my_dataset --decoder cv2
 
-# 更小的缓存；quality=90, 4:2:0。视觉训练通常建议先比较指标再降质量。
-mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset --jpeg-quality 90 --jpeg-subsampling 2
+# 更小的 cache：JPEG 质量 90、4:2:0。请先在任务指标上验证质量损失。
+lerobot_tools lmdb-build /data/my_dataset \
+  --jpeg-quality 90 --jpeg-subsampling 2
 
-# 只构建一个视角 / 试跑少量 episode
-mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset \
+# 仅处理一个视角和前 10 条 episode
+lerobot_tools lmdb-build /data/my_dataset \
   --video-key observation.images.top --max-episodes 10
 
-# 重建已有缓存；坏视频记录后继续
-mtl_tool.lerobot_lmdb_build /data/lerobot/my_dataset --overwrite --skip-bad-videos
+# 健康 cache 默认跳过；显式重建并跳过坏视频
+lerobot_tools lmdb-build /data/my_dataset --overwrite --skip-bad-videos
 ```
 
-默认不使用 `--target-fps`，因此 cache key 与 episode 的原始 frame index 一一对应，最适合现有 LeRobot 训练代码。使用 `--target-fps` 时，缓存中的 key 变为连续的采样序号；原始 frame id 在 `__meta__.source_frame_indices` 中保存，训练代码需要据此映射，不能直接把原始 frame index 当作 LMDB key。
+`--jpeg-subsampling`：`0=4:4:4`（默认）、`1=4:2:2`、`2=4:2:0`。默认 `quality=95, subsampling=0` 优先保真。
 
-## 2. DataLoader 示例
+### 关于 `--target-fps`
 
-先安装 `examples` extra 并完成构建：
+默认不传 `--target-fps`，cache key 与原始 episode frame index 一一对应，可直接给现有训练 loader 使用。
+
+使用 `--target-fps` 后，LMDB key 是“采样后的连续帧序号”；原始视频 frame index 保存为 `__meta__.source_frame_indices`。训练代码必须根据它做映射，不能再直接用原始 frame index 作为 LMDB key。
+
+### 2. LeRobot v3 → v2.1
+
+转换器面向如下 v3 task-sharded 布局：
+
+```text
+source_root/
+├── meta/info.json
+├── meta/tasks.parquet
+├── meta/episodes/*.parquet
+├── data/chunk-XXX/file-XXX.parquet
+└── videos/<video_key>/chunk-XXX/file-XXX.mp4
+```
 
 ```bash
-python examples/dataloader.py /data/lerobot/my_dataset \
+lerobot_tools convert /data/robotwin_v3 /data/robotwin_v21 \
+  --jobs 8 --ffmpeg-threads 1
+
+# 先小规模验证
+lerobot_tools convert /data/robotwin_v3 /tmp/robotwin_v21_check \
+  --max-datasets 1 --max-episodes 10
+
+# 转换成功后构建 LMDB
+lerobot_tools lmdb-build /data/robotwin_v21 --jobs 8
+```
+
+输出为逐 episode parquet、逐 episode MP4，以及 v2.1 所需的 `meta/*.jsonl`。视频默认重编码为 `libx264` / CRF 18 / `veryfast`；可使用 `--video-codec`、`--video-crf`、`--video-preset` 调整。已有输出目录默认会报错，只有 `--overwrite` 才会替换它。
+
+## Python API
+
+```python
+from lerobot_tools import convert, lerobot_lmdb_build
+
+convert(
+    "/data/robotwin_v3",
+    "/data/robotwin_v21",
+    jobs=8,
+    ffmpeg_threads=1,
+)
+
+lerobot_lmdb_build(
+    "/data/robotwin_v21",
+    decoder="auto",        # auto | cv2 | ffmpeg
+    jpeg_quality=95,        # 1..100
+    jpeg_subsampling=0,     # 0 | 1 | 2
+    jobs=8,
+)
+```
+
+`lerobot_lmdb_build` 支持：`output_root`、`decoder`、`jpeg_quality`、`jpeg_subsampling`、`target_fps`、`jobs`、`video_key`、`max_episodes`、`overwrite`、`skip_bad_videos`、`dry_run`。
+
+`convert` 支持：`chunk_size`、`video_codec`、`video_crf`、`video_preset`、`jobs`、`ffmpeg_threads`、`max_datasets`、`max_episodes`、`overwrite`。
+
+## PyTorch DataLoader
+
+完成 LMDB 构建后可直接运行：
+
+```bash
+python examples/dataloader.py /data/my_dataset \
   --batch-size 64 --workers 8 --batches 3
 ```
 
-batch 的 `image` 是 `uint8` 的 `NCHW RGB` Tensor，另有 `episode_index`、`frame_index` 和 `video_key`。可以在模型前归一化，也可以给 `LmdbFrameDataset(..., transform=...)` 传入自己的 NumPy RGB transform。
+或集成到训练：
 
 ```python
 from torch.utils.data import DataLoader
-from mtl_tool import LmdbFrameDataset, lerobot_lmdb_build
+from lerobot_tools import LmdbFrameDataset
 
-dataset = LmdbFrameDataset("/data/lerobot/my_dataset")
-loader = DataLoader(dataset, batch_size=32, num_workers=4, shuffle=True, persistent_workers=True)
+dataset = LmdbFrameDataset("/data/my_dataset")
+loader = DataLoader(
+    dataset,
+    batch_size=32,
+    shuffle=True,
+    num_workers=4,
+    persistent_workers=True,
+)
+
 for batch in loader:
-    images = batch["image"].float().div_(255)  # N, C, H, W
+    # uint8 NCHW RGB
+    images = batch["image"].float().div_(255)
     # train(images)
 ```
 
-同一能力也可直接作为 Python API 调用：
-
-```python
-from mtl_tool import convert, lerobot_lmdb_build
-
-convert("/data/robotwin_v3", "/data/robotwin_v21", jobs=8)
-lerobot_lmdb_build("/data/robotwin_v21", decoder="auto", jpeg_quality=95, jobs=8)
-```
-
-## 3. LeRobot v3 → v2.1
-
-此转换器面向 task-sharded v3 数据：共享 parquet / MP4 文件加 `meta/episodes/*.parquet` 的时间范围。输出为 v2.1 的逐 episode parquet、逐 episode MP4 和 `meta/*.jsonl`：
-
-```bash
-mtl_tool.convert /data/robotwin_v3 /data/robotwin_v21 \
-  --jobs 8 --ffmpeg-threads 1
-
-# 验证完转换后，再构建 LMDB
-mtl_tool.lerobot_lmdb_build /data/robotwin_v21 --decoder auto --jobs 8
-```
-
-转换器不会覆盖输出目录，除非显式传入 `--overwrite`。`--max-datasets` 和 `--max-episodes` 可用于先做小规模验证。视频裁剪会重编码（默认 `libx264`, CRF 18）；可用 `--video-codec`、`--video-crf` 和 `--video-preset` 控制。
+返回 batch 包含 `image`、`episode_index`、`frame_index` 与 `video_key`。每个 DataLoader worker 均维护独立、有限大小的 LMDB environment LRU cache，避免跨进程复用句柄。
 
 ## 兼容性与限制
 
-- 输入 v2.1 需要 `meta/info.json`、`videos/chunk-XXX/<video_key>/episode_XXXXXX.mp4`，并在 metadata 中使用 `chunks_size` 与 video features。
-- v3 转换器假设源路径为 `data/chunk-XXX/file-XXX.parquet`、`videos/<video_key>/chunk-XXX/file-XXX.mp4`，并包含 `meta/episodes/*.parquet`、`meta/tasks.parquet`。这是 RobotWin 任务分片导出的布局。
-- LMDB 是“解码视频后再 JPEG 编码”的有损缓存。质量 95 / 4:4:4 是默认的保真取向；请针对你的模型验证低质量或 4:2:0 的影响。
-- 多进程/多机训练可并发只读同一 cache；每个 DataLoader worker 会独立打开 LMDB，避免跨进程复用句柄。
+- LMDB cache 只包含 RGB 视频帧，不包含 parquet、action、文本或模型权重。
+- JPEG cache 是有损格式；调低质量或使用 4:2:0 前，请针对自己的训练/评测任务验证。
+- 支持多进程/多机并发只读；训练期间不要重建同一 cache 目录。
+- v2.1 dataset 通过 `meta/info.json` 中的 `chunks_size` 与 `features[*].dtype == "video"` 定位视频。
 
 ## 开发
 
@@ -132,4 +210,4 @@ pytest -q
 ruff check src tests examples
 ```
 
-本仓库不包含数据集、模型权重或 ffmpeg 二进制文件。
+MIT License. 本仓库不包含数据集、模型权重或 ffmpeg 二进制文件。
