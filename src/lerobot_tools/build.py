@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
@@ -14,7 +17,7 @@ import lmdb
 import numpy as np
 from tqdm import tqdm
 
-from .cache import read_metadata, write_frames
+from .cache import encode_jpeg_rgb, read_metadata, write_frames
 from .layout import (
     cache_path,
     discover_v21_datasets,
@@ -61,6 +64,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video-key", action="append", default=None, help="Only cache this video feature; repeatable.")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing caches.")
     parser.add_argument("--skip-bad-videos", action="store_true", help="Record failures and continue processing.")
+    parser.add_argument(
+        "--space-safety-factor",
+        type=float,
+        default=1.25,
+        help="Reserve this multiple of the sampled-JPEG size estimate before writing LMDB.",
+    )
+    parser.add_argument(
+        "--skip-space-check",
+        action="store_true",
+        help="Skip the pre-build output-disk capacity check (not recommended).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print planned work without decoding or writing.")
     return parser.parse_args()
 
@@ -74,13 +88,18 @@ def _fraction(value: str | None) -> float:
         return 0.0
 
 
-def _ffprobe(path: Path) -> tuple[int, int, float]:
+def _ffprobe_stream(path: Path) -> dict[str, Any]:
     command = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate", "-of", "json", str(path),
+        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,duration",
+        "-of", "json", str(path),
     ]
     output = subprocess.run(command, check=True, capture_output=True, text=True).stdout
-    stream = json.loads(output)["streams"][0]
+    return json.loads(output)["streams"][0]
+
+
+def _ffprobe(path: Path) -> tuple[int, int, float]:
+    stream = _ffprobe_stream(path)
     fps = _fraction(stream.get("avg_frame_rate")) or _fraction(stream.get("r_frame_rate"))
     return int(stream["width"]), int(stream["height"]), fps
 
@@ -123,6 +142,47 @@ def _decode_ffmpeg(path: Path) -> tuple[np.ndarray, float]:
     return frames, fps
 
 
+def _preview_cv2(path: Path) -> np.ndarray:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("OpenCV is not installed; run `pip install lerobot-tools[cv2]`.") from exc
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        raise RuntimeError(f"OpenCV cannot open {path}")
+    try:
+        ok, frame = capture.read()
+    finally:
+        capture.release()
+    if not ok:
+        raise RuntimeError(f"OpenCV decoded zero frames from {path}")
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def _preview_ffmpeg(path: Path) -> np.ndarray:
+    width, height, _ = _ffprobe(path)
+    command = [
+        "ffmpeg", "-v", "error", "-nostdin", "-threads", "1", "-i", str(path),
+        "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(command, check=True, capture_output=True).stdout
+    frame_bytes = width * height * 3
+    if len(raw) < frame_bytes:
+        raise RuntimeError(f"ffmpeg decoded zero frames from {path}")
+    return np.frombuffer(raw[:frame_bytes], dtype=np.uint8).reshape(height, width, 3).copy()
+
+
+def _preview_frame(path: Path, decoder: str) -> np.ndarray:
+    errors: list[str] = []
+    backends = ("cv2", "ffmpeg") if decoder == "auto" else (decoder,)
+    for backend in backends:
+        try:
+            return _preview_cv2(path) if backend == "cv2" else _preview_ffmpeg(path)
+        except Exception as exc:  # noqa: BLE001 - preflight mirrors decoder fallback behavior.
+            errors.append(f"{backend}: {exc}")
+    raise RuntimeError(f"Unable to decode a preview frame from {path}. " + " | ".join(errors))
+
+
 def decode_video(path: Path, decoder: str) -> tuple[np.ndarray, float, str]:
     """Decode with the requested backend; automatic mode intentionally prefers cv2."""
     errors: list[str] = []
@@ -141,6 +201,83 @@ def sample_frame_ids(num_frames: int, source_fps: float, target_fps: float | Non
         return np.arange(num_frames, dtype=np.int64)
     indices = np.arange(0.0, num_frames, source_fps / target_fps, dtype=np.float64)
     return np.unique(np.clip(np.round(indices).astype(np.int64), 0, num_frames - 1))
+
+
+def _sampled_frame_count(num_frames: int, source_fps: float, target_fps: float | None) -> int:
+    if target_fps is None or target_fps <= 0 or source_fps <= 0 or target_fps >= source_fps:
+        return num_frames
+    return max(1, math.ceil(num_frames * target_fps / source_fps))
+
+
+def _stream_frame_count(stream: dict[str, Any], source_fps: float) -> int:
+    try:
+        frame_count = int(stream.get("nb_frames"))
+    except (TypeError, ValueError):
+        frame_count = math.ceil(float(stream.get("duration") or 0.0) * source_fps)
+    if frame_count <= 0:
+        raise RuntimeError("ffprobe did not provide a positive frame count or duration")
+    return frame_count
+
+
+def _format_bytes(size: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    raise AssertionError("unreachable")
+
+
+def _existing_parent(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            raise FileNotFoundError(f"No existing parent found for {path}")
+        candidate = parent
+    return candidate
+
+
+def _estimate_cache_bytes(task: dict[str, Any]) -> int:
+    stream = _ffprobe_stream(task["video_path"])
+    source_fps = _fraction(stream.get("avg_frame_rate")) or _fraction(stream.get("r_frame_rate"))
+    source_fps = source_fps if source_fps > 0 else float(task["info_fps"])
+    total_frames = _stream_frame_count(stream, source_fps)
+    cached_frames = _sampled_frame_count(total_frames, source_fps, task["target_fps"])
+    sample = _preview_frame(task["video_path"], task["decoder"])
+    jpeg_bytes = len(encode_jpeg_rgb(sample, task["jpeg_quality"], task["jpeg_subsampling"]))
+    payload_bytes = jpeg_bytes * cached_frames
+    # LMDB pages, keys and metadata are small but non-zero; avoid underestimating short episodes.
+    return payload_bytes + max(64 * 1024, math.ceil(payload_bytes * 0.02))
+
+
+def _check_output_space(tasks: list[dict[str, Any]], safety_factor: float) -> None:
+    estimates: dict[int, dict[str, Any]] = {}
+    for task in tqdm(tasks, desc="estimate disk space"):
+        estimated = _estimate_cache_bytes(task)
+        probe_path = _existing_parent(task["cache_path"])
+        device = os.stat(probe_path).st_dev
+        group = estimates.setdefault(device, {"path": probe_path, "bytes": 0, "tasks": 0})
+        group["bytes"] += estimated
+        group["tasks"] += 1
+
+    insufficient: list[str] = []
+    print(f"disk estimate (sampled JPEG × safety factor {safety_factor:.2f}):")
+    for group in estimates.values():
+        required = math.ceil(group["bytes"] * safety_factor)
+        free = shutil.disk_usage(group["path"]).free
+        print(
+            f"  output_fs={group['path']} tasks={group['tasks']} "
+            f"estimated={_format_bytes(group['bytes'])} required={_format_bytes(required)} "
+            f"free={_format_bytes(free)}"
+        )
+        if free < required:
+            insufficient.append(
+                f"{group['path']}: requires {_format_bytes(required)}, only {_format_bytes(free)} available"
+            )
+    if insufficient:
+        raise RuntimeError("Insufficient disk space for LMDB build:\n  " + "\n  ".join(insufficient))
 
 
 def _episode_count(dataset_root: Path, info: dict[str, Any]) -> int:
@@ -206,6 +343,8 @@ def lerobot_lmdb_build(
     max_episodes: int | None = None,
     overwrite: bool = False,
     skip_bad_videos: bool = False,
+    space_safety_factor: float = 1.25,
+    skip_space_check: bool = False,
     dry_run: bool = False,
 ) -> None:
     """Build compatible LeRobot JPEG-in-LMDB caches from Python.
@@ -226,6 +365,8 @@ def lerobot_lmdb_build(
         max_episodes=max_episodes,
         overwrite=overwrite,
         skip_bad_videos=skip_bad_videos,
+        space_safety_factor=space_safety_factor,
+        skip_space_check=skip_space_check,
         dry_run=dry_run,
     )
     _run_build(args)
@@ -236,6 +377,8 @@ def _run_build(args: argparse.Namespace) -> None:
         raise ValueError("--jpeg-quality must be between 1 and 100")
     if args.jobs < 1:
         raise ValueError("--jobs must be positive")
+    if args.space_safety_factor <= 0:
+        raise ValueError("--space-safety-factor must be positive")
     input_root = args.dataset_root.expanduser().resolve()
     output_root = args.output_root.expanduser().resolve() if args.output_root else None
     datasets = discover_v21_datasets(input_root)
@@ -281,7 +424,13 @@ def _run_build(args: argparse.Namespace) -> None:
                 )
 
     print(f"planned={len(tasks)}  existing_or_skipped={skipped}  decoder={args.decoder}  jpeg=Q{args.jpeg_quality}")
-    if args.dry_run or not tasks:
+    if not tasks:
+        return
+    if args.skip_space_check:
+        print("[WARN] skipped output-disk capacity check")
+    else:
+        _check_output_space(tasks, args.space_safety_factor)
+    if args.dry_run:
         return
 
     failures: list[tuple[Path, Exception]] = []

@@ -81,7 +81,7 @@ lmdb/
 常见选项：
 
 ```bash
-# 只查看任务计划，不解码、不写数据
+# 只查看任务计划；会读取视频元信息和一个代表帧以做空间预估，但不会写 LMDB
 lerobot_tools lmdb-build /data/lerobot --dry-run
 
 # 多数据集根目录：缓存写入本地 SSD，并镜像数据集相对路径
@@ -104,6 +104,18 @@ lerobot_tools lmdb-build /data/my_dataset --overwrite --skip-bad-videos
 ```
 
 `--jpeg-subsampling`：`0=4:4:4`（默认）、`1=4:2:2`、`2=4:2:0`。默认 `quality=95, subsampling=0` 优先保真。
+
+### 构建前空间预检
+
+每次构建会在写入 LMDB 前，读取每个视频的帧数并编码一个代表帧，以估算 JPEG cache 体积；随后按输出路径所在文件系统汇总并检查可用空间。默认会在估算值上预留 25% 安全余量，空间不足会在写入前终止。
+
+```bash
+# 提高安全余量到 50%
+lerobot_tools lmdb-build /data/my_dataset --space-safety-factor 1.5
+
+# 仅在你已自行确认容量时跳过检查（不推荐）
+lerobot_tools lmdb-build /data/my_dataset --skip-space-check
+```
 
 ### 关于 `--target-fps`
 

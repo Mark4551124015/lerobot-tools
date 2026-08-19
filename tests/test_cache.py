@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from lerobot_tools.build import _sampled_frame_count
 from lerobot_tools.cache import frame_key, read_frame, read_metadata, write_frames
 
 
@@ -22,3 +23,9 @@ def test_jpeg_lmdb_round_trip_and_compatible_keys(tmp_path):
     assert restored.shape == (8, 10, 3)
     assert restored.dtype == np.uint8
     assert restored[..., 0].mean() > 245
+
+
+def test_sampled_frame_count_matches_fps_behavior():
+    assert _sampled_frame_count(100, 30, None) == 100
+    assert _sampled_frame_count(100, 30, 60) == 100
+    assert _sampled_frame_count(100, 30, 10) == 34
